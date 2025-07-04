@@ -6,7 +6,7 @@
     - pcd 文件的保存，注意事项：必须在rviz中，订阅map cloud(已经修改text.rviz,默认是订阅状态)
     - 保存的pcd有4个文件：具体含义，问AI 
 
-！ 坐标系的关系
+！ 坐标系的关系   
 The cordinate of velodyne LiDAR:   
 
 <img src="https://github.com/wykxwyc/LeGO-LOAM_NOTED/blob/master/velodyne_LiDAR_cordinate.jpg" width = 80% height = 80%/>   
