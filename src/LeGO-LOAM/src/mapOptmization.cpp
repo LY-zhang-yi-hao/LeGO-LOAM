@@ -38,6 +38,16 @@ private:
     ros::Publisher pubRecentKeyFrames;
     ros::Publisher pubRegisteredCloud;
 
+    // For saving all poses (not just keyframes)
+    pcl::PointCloud<PointTypePose>::Ptr allPoses6D;
+    std::ofstream poseFile;
+    std::ofstream poseFileKitti;        // KITTI格式轨迹文件
+
+    // For saving odometry poses (before mapping optimization)
+    pcl::PointCloud<PointTypePose>::Ptr allOdomPoses6D;
+    std::ofstream odomPoseFile;
+    std::ofstream odomPoseFileKitti;    // KITTI格式里程计轨迹文件
+
     ros::Subscriber subLaserCloudCornerLast;
     ros::Subscriber subLaserCloudSurfLast;
     ros::Subscriber subOutlierCloudLast;
@@ -269,6 +279,48 @@ public:
         globalMapKeyPosesDS.reset(new pcl::PointCloud<PointType>());
         globalMapKeyFrames.reset(new pcl::PointCloud<PointType>());
         globalMapKeyFramesDS.reset(new pcl::PointCloud<PointType>());
+
+        // Initialize all poses storage
+        allPoses6D.reset(new pcl::PointCloud<PointTypePose>());
+        allOdomPoses6D.reset(new pcl::PointCloud<PointTypePose>());
+
+        // Open pose file for writing (optimized poses)
+        string poseFilePath = fileDirectory + "all_poses.txt";
+        poseFile.open(poseFilePath.c_str());
+        if (poseFile.is_open()) {
+            poseFile << "# timestamp x y z roll pitch yaw" << std::endl;
+            ROS_INFO("Pose file opened: %s", poseFilePath.c_str());
+        } else {
+            ROS_ERROR("Failed to open pose file: %s", poseFilePath.c_str());
+        }
+
+        // Open KITTI format pose file for writing (optimized poses)
+        string poseFileKittiPath = fileDirectory + "all_poses_kitti.txt";
+        poseFileKitti.open(poseFileKittiPath.c_str());
+        if (poseFileKitti.is_open()) {
+            ROS_INFO("KITTI pose file opened: %s", poseFileKittiPath.c_str());
+        } else {
+            ROS_ERROR("Failed to open KITTI pose file: %s", poseFileKittiPath.c_str());
+        }
+
+        // Open odometry pose file for writing (all frames)
+        string odomPoseFilePath = fileDirectory + "all_odom_poses.txt";
+        odomPoseFile.open(odomPoseFilePath.c_str());
+        if (odomPoseFile.is_open()) {
+            odomPoseFile << "# timestamp x y z roll pitch yaw" << std::endl;
+            ROS_INFO("Odometry pose file opened: %s", odomPoseFilePath.c_str());
+        } else {
+            ROS_ERROR("Failed to open odometry pose file: %s", odomPoseFilePath.c_str());
+        }
+
+        // Open KITTI format odometry pose file for writing (all frames)
+        string odomPoseFileKittiPath = fileDirectory + "all_odom_poses_kitti.txt";
+        odomPoseFileKitti.open(odomPoseFileKittiPath.c_str());
+        if (odomPoseFileKitti.is_open()) {
+            ROS_INFO("KITTI odometry pose file opened: %s", odomPoseFileKittiPath.c_str());
+        } else {
+            ROS_ERROR("Failed to open KITTI odometry pose file: %s", odomPoseFileKittiPath.c_str());
+        }
 
         timeLaserCloudCornerLast = 0;
         timeLaserCloudSurfLast = 0;
@@ -586,6 +638,10 @@ public:
         transformSum[3] = laserOdometry->pose.pose.position.x;
         transformSum[4] = laserOdometry->pose.pose.position.y;
         transformSum[5] = laserOdometry->pose.pose.position.z;
+
+        // Save every odometry pose (before mapping optimization)
+        saveOdometryPose();
+
         newLaserOdometry = true;
     }
 
@@ -599,6 +655,107 @@ public:
         imuTime[imuPointerLast] = imuIn->header.stamp.toSec();
         imuRoll[imuPointerLast] = roll;
         imuPitch[imuPointerLast] = pitch;
+    }
+
+    /**
+     * @brief 将欧拉角和平移转换为KITTI格式的变换矩阵（4x4矩阵的前3行）
+     * @param x, y, z 平移
+     * @param roll, pitch, yaw 欧拉角（弧度）
+     * @param outFile 输出文件流
+     */
+    void saveKittiFormat(double x, double y, double z, double roll, double pitch, double yaw, std::ofstream& outFile)
+    {
+        if (!outFile.is_open()) return;
+
+        // 计算旋转矩阵 R = Rz(yaw) * Ry(pitch) * Rx(roll)
+        double cr = cos(roll), sr = sin(roll);
+        double cp = cos(pitch), sp = sin(pitch);
+        double cy = cos(yaw), sy = sin(yaw);
+
+        // 旋转矩阵元素
+        double r11 = cy * cp;
+        double r12 = cy * sp * sr - sy * cr;
+        double r13 = cy * sp * cr + sy * sr;
+        double r21 = sy * cp;
+        double r22 = sy * sp * sr + cy * cr;
+        double r23 = sy * sp * cr - cy * sr;
+        double r31 = -sp;
+        double r32 = cp * sr;
+        double r33 = cp * cr;
+
+        // KITTI格式：12个数字表示4x4变换矩阵的前3行
+        outFile << std::fixed << std::setprecision(9)
+                << r11 << " " << r12 << " " << r13 << " " << x << " "
+                << r21 << " " << r22 << " " << r23 << " " << y << " "
+                << r31 << " " << r32 << " " << r33 << " " << z << std::endl;
+    }
+
+    void saveOdometryPose()
+    {
+        // Save odometry pose (every frame) to point cloud
+        PointTypePose thisPose6D;
+        thisPose6D.x = transformSum[3];
+        thisPose6D.y = transformSum[4];
+        thisPose6D.z = transformSum[5];
+        thisPose6D.roll = transformSum[0];
+        thisPose6D.pitch = transformSum[1];
+        thisPose6D.yaw = transformSum[2];
+        thisPose6D.time = timeLaserOdometry;
+        thisPose6D.intensity = allOdomPoses6D->points.size(); // frame index
+        allOdomPoses6D->push_back(thisPose6D);
+
+        // Save to text file (original format)
+        if (odomPoseFile.is_open()) {
+            odomPoseFile << std::fixed << std::setprecision(9)
+                         << timeLaserOdometry << " "
+                         << transformSum[3] << " "
+                         << transformSum[4] << " "
+                         << transformSum[5] << " "
+                         << transformSum[0] << " "
+                         << transformSum[1] << " "
+                         << transformSum[2] << std::endl;
+        }
+
+        // Save to KITTI format file
+        saveKittiFormat(transformSum[3], transformSum[4], transformSum[5],
+                       transformSum[0], transformSum[1], transformSum[2],
+                       odomPoseFileKitti);
+
+        ROS_DEBUG("Saved odometry pose %lu at time %.6f", allOdomPoses6D->points.size()-1, timeLaserOdometry);
+    }
+
+    void saveCurrentPose()
+    {
+        // Save current pose to point cloud
+        PointTypePose thisPose6D;
+        thisPose6D.x = transformAftMapped[3];
+        thisPose6D.y = transformAftMapped[4];
+        thisPose6D.z = transformAftMapped[5];
+        thisPose6D.roll = transformAftMapped[0];
+        thisPose6D.pitch = transformAftMapped[1];
+        thisPose6D.yaw = transformAftMapped[2];
+        thisPose6D.time = timeLaserOdometry;
+        thisPose6D.intensity = allPoses6D->points.size(); // frame index
+        allPoses6D->push_back(thisPose6D);
+
+        // Save to text file (original format)
+        if (poseFile.is_open()) {
+            poseFile << std::fixed << std::setprecision(9)
+                     << timeLaserOdometry << " "
+                     << transformAftMapped[3] << " "
+                     << transformAftMapped[4] << " "
+                     << transformAftMapped[5] << " "
+                     << transformAftMapped[0] << " "
+                     << transformAftMapped[1] << " "
+                     << transformAftMapped[2] << std::endl;
+        }
+
+        // Save to KITTI format file
+        saveKittiFormat(transformAftMapped[3], transformAftMapped[4], transformAftMapped[5],
+                       transformAftMapped[0], transformAftMapped[1], transformAftMapped[2],
+                       poseFileKitti);
+
+        ROS_DEBUG("Saved pose %lu at time %.6f", allPoses6D->points.size()-1, timeLaserOdometry);
     }
 
     void publishTF()
@@ -684,6 +841,40 @@ public:
             rate.sleep();
             publishGlobalMap();
         }
+        // Close pose files
+        if (poseFile.is_open()) {
+            poseFile.close();
+            ROS_INFO("Pose file closed with %lu poses", allPoses6D->points.size());
+        }
+
+        if (poseFileKitti.is_open()) {
+            poseFileKitti.close();
+            ROS_INFO("KITTI pose file closed with %lu poses", allPoses6D->points.size());
+        }
+
+        if (odomPoseFile.is_open()) {
+            odomPoseFile.close();
+            ROS_INFO("Odometry pose file closed with %lu poses", allOdomPoses6D->points.size());
+        }
+
+        if (odomPoseFileKitti.is_open()) {
+            odomPoseFileKitti.close();
+            ROS_INFO("KITTI odometry pose file closed with %lu poses", allOdomPoses6D->points.size());
+        }
+
+        // Save all poses as PCD files
+        if (allPoses6D->points.size() > 0) {
+            pcl::io::savePCDFileASCII(fileDirectory + "all_poses.pcd", *allPoses6D);
+            ROS_INFO("All poses saved to: %s", (fileDirectory + "all_poses.pcd").c_str());
+            ROS_INFO("Total poses saved: %lu", allPoses6D->points.size());
+        }
+
+        if (allOdomPoses6D->points.size() > 0) {
+            pcl::io::savePCDFileASCII(fileDirectory + "all_odom_poses.pcd", *allOdomPoses6D);
+            ROS_INFO("All odometry poses saved to: %s", (fileDirectory + "all_odom_poses.pcd").c_str());
+            ROS_INFO("Total odometry poses saved: %lu", allOdomPoses6D->points.size());
+        }
+
         // save final point cloud
         pcl::io::savePCDFileASCII(fileDirectory + "finalCloud.pcd", *globalMapKeyFramesDS);
 
@@ -1551,6 +1742,9 @@ public:
                 correctPoses();
 
                 publishTF();
+
+                // Save current pose for every processed frame
+                saveCurrentPose();
 
                 publishKeyPosesAndFrames();
 
