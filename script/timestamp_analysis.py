@@ -55,7 +55,7 @@ print("📊 LeGO-LOAM时间戳转换:")
 print("-" * 40)
 for i, ts in enumerate(lego_timestamps):
     readable = unix_to_readable(ts)
-    print(f"{i+1}. {ts:.9f} -> {readable}")
+    print(f"{readable}")
 
 print("\n📊 原始雷达时间戳转换:")
 print("-" * 40)
